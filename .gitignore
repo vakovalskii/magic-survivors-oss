@@ -22,3 +22,6 @@ __pycache__/
 # свой сервер: настройки и база
 server/.env
 /data/
+/Assets/Resources/Sprites/*.png
+/Assets/Resources/Sprites/*.txt
+/.revmux/

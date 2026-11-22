@@ -25,6 +25,39 @@
   <canvas id="c" tabindex="-1"></canvas>
   <div id="load"><div>{{{ PRODUCT_NAME }}}</div><div id="bar"><div id="fill"></div></div><div id="err"></div></div>
   <script>
+    // Unity на WebGL рисует по requestAnimationFrame и игнорирует Application.targetFrameRate: на 120-герцовом
+    // экране выходило 120 кадров в секунду. Режем частоту здесь, до старта рантайма; игра сообщает свою настройку
+    // через SetFrameCap (GameLoot.cs). ?fps= в адресе перебивает всё — так меряет стенд.
+    // Кадры копим в очередь, а выдаём пачкой на своём такте: если просто не звать колбэк Unity, её цикл встаёт
+    // (проверено: игра шла 1 кадр в секунду).
+    (function () {
+      var raf = window.requestAnimationFrame.bind(window);
+      var cap = 60, last = -Infinity, queue = [];
+      var q = new URLSearchParams(location.search);
+      if (q.has("fps")) cap = parseFloat(q.get("fps")) || 0;
+      function flush() {
+        if (!queue.length) return;
+        var cbs = queue, now = performance.now();
+        queue = [];
+        for (var i = 0; i < cbs.length; i++) cbs[i](now);
+      }
+      var next = 0;
+      window.SetFrameCap = function (fps) { cap = fps | 0; next = 0; flush(); };
+      raf(function tick(t) {
+        if (!cap) { flush(); raf(tick); return; }
+        var step = 1000 / cap;
+        if (!next) next = t;
+        if (t >= next - 1) {
+          next += step;
+          if (t - next > step) next = t + step;
+          flush();
+        }
+        raf(tick);
+      });
+      window.requestAnimationFrame = function (cb) { queue.push(cb); return 0; };
+    })();
+  </script>
+  <script>
     var canvas = document.getElementById("c");
     var config = {
       dataUrl: "Build/{{{ DATA_FILENAME }}}",

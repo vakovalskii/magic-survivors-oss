@@ -11,6 +11,7 @@ public static class World
     static readonly Dictionary<string, float> heights = new();
     static Light moon;
     static Camera cam;
+    public static Quaternion Billboard => cam != null ? cam.transform.rotation : Quaternion.identity;
     static Vignette vignette;
     static Bloom bloom;
     public static void SetBloom(bool on) { if (bloom != null) bloom.active = on; }
@@ -81,6 +82,12 @@ public static class World
         return m;
     }
 
+    public static Color VatTint(Color tint, float glow)
+    {
+        var c = tint * Level.enemyTint;
+        return c * (1f + Mathf.Min(0.8f, glow + Level.enemyGlow));
+    }
+
     public static Material FlashMat
     {
         get
@@ -88,7 +95,10 @@ public static class World
             if (flashMat == null)
             {
                 flashMat = new Material(Skeleton);
-                flashMat.SetColor("_EmissionColor", new Color(1.6f, 1.6f, 1.6f));
+                // вспышка от удара не должна стирать текстуру: HDR нет, поэтому и база, и свечение держатся
+                // в пределах единицы, а цвет уходит в тёплый пересвет вместо белого
+                flashMat.SetColor("_BaseColor", new Color(0.95f, 0.72f, 0.66f));
+                flashMat.SetColor("_EmissionColor", new Color(0.35f, 0.16f, 0.12f));
             }
             return flashMat;
         }
@@ -210,7 +220,7 @@ public static class World
     class Baked { public Mesh mesh; public string[] bones; public string rootBone; }
     static readonly Dictionary<string, Baked> baked = new();
 
-    public static Renderer[] Combine(GameObject go, string key, Material mat)
+    public static Renderer[] Combine(GameObject go, string key, Material mat, bool vatOn = false)
     {
         var smrs = go.GetComponentsInChildren<SkinnedMeshRenderer>();
         if (smrs.Length == 0) return go.GetComponentsInChildren<Renderer>();
@@ -219,6 +229,27 @@ public static class World
         var holder = new GameObject("Combined");
         holder.transform.SetParent(go.transform, false);
         if (!baked.TryGetValue(key, out var b)) baked[key] = b = Bake(go, smrs, holder.transform);
+        var parts = key.Split('|');
+        var model = parts[0];
+        var weapon = parts.Length > 1 ? parts[1] : "";
+        var vat = VatMobs.Get(model, weapon);
+        var vmat = vatOn && vat != null && !vatOff && model.StartsWith("Skeleton") && vat.tex.width == b.mesh.vertexCount ? VatMaterial(model, vat) : null;
+        if (vmat != null)
+        {
+            holder.AddComponent<MeshFilter>().sharedMesh = b.mesh;
+            var mrv = holder.AddComponent<MeshRenderer>();
+            mrv.sharedMaterial = vmat;
+            mrv.shadowCastingMode = ShadowCastingMode.Off;
+            mrv.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+            mrv.lightProbeUsage = LightProbeUsage.Off;
+            mrv.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            holder.AddComponent<VatActor>().Setup(vat, mrv);
+            foreach (var r0 in go.GetComponentsInChildren<Renderer>())
+                if (r0 != mrv) r0.enabled = false;
+            var an = go.GetComponent<Animator>();
+            if (an != null) an.enabled = false;
+            return new Renderer[] { mrv };
+        }
         var smr = holder.AddComponent<SkinnedMeshRenderer>();
         smr.sharedMesh = b.mesh;
         var bones = new Transform[b.bones.Length];
@@ -235,6 +266,27 @@ public static class World
         foreach (var r in go.GetComponentsInChildren<Renderer>())
             if (r != smr) r.enabled = false;
         return new Renderer[] { smr };
+    }
+
+    static readonly Dictionary<string, Material> vatMats = new();
+
+    public static bool vatOff = (Application.absoluteURL ?? "").Contains("novat=1");
+
+    public static Material VatMaterial(string model, VatMobs.Info info)
+    {
+        if (vatMats.TryGetValue(model, out var m) && m != null) return m;
+        var src = Resources.Load<Material>("Mats/VatLit");
+        if (src == null) return null;
+        m = new Material(src);
+        m.SetTexture("_MainTex", Skeleton != null ? Skeleton.mainTexture : null);
+        m.SetTexture("_VatTex", info.tex);
+        int total = 0;
+        foreach (var kv in info.offset) total = Mathf.Max(total, kv.Value + (info.frames.TryGetValue(kv.Key, out var f) ? f : 0));
+        m.SetFloat("_VatFrames", Mathf.Max(1, total));
+        m.SetFloat("_VatVerts", Mathf.Max(1, info.tex.width));
+        m.SetFloat("_VatFps", 30f);
+        vatMats[model] = m;
+        return m;
     }
 
     static Baked Bake(GameObject go, SkinnedMeshRenderer[] smrs, Transform R)

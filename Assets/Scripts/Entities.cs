@@ -48,6 +48,7 @@ public class Enemy
     public EnemyType type;
     public Vector2 pos, sep;
     public float hp, maxHp, dmg, radius, flash, orbReadyAt, spawnLock, dying, attackCd, stun, shownUntil, slow, frozen;
+    public float atkAnim;
     public bool charged, rage;
     public bool raised;    // поднят призывателем — таких держим немного, иначе к 8-й минуте врагов вдвое больше и телефоны тонут
     public float shotCd;   // стрелок: до выстрела
@@ -101,6 +102,7 @@ public class Proj
     public MeshFilter mf;
     public Mesh baseMesh;
     public Light light;
+    public Material mat;
     public bool alive;
     public Mage owner;
     public readonly HashSet<Enemy> hit = new();

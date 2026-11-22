@@ -61,6 +61,7 @@ public static class Builder
     [MenuItem("Build/Web")]
     public static string Web()
     {
+        VatBaker.Bake();
         // gzip, а не brotli: brotli браузер распакует только по https с правильными заголовками; с fallback игра стартует даже без настройки nginx
         PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Gzip;
         PlayerSettings.WebGL.decompressionFallback = true;

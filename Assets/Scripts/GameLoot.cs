@@ -273,9 +273,19 @@ public partial class Game
         optBloom = PlayerPrefs.GetInt("opt.bloom", 1) == 1;
         // телефоны по умолчанию на 30: по телеметрии они и так держат ~39 из 60, а ровные 30 — вдвое меньше нагрева
         optFps = PlayerPrefs.GetInt("opt.fps", Application.isMobilePlatform ? 30 : 60);
+        // стенд: ?fps=30 перебивает сохранённую настройку, чтобы мерить потолок без захода в настройки.
+        // Такой заход главнее игры: шаблон страницы уже выставил потолок, трогать его отсюда нельзя
+        var fpsUrl = System.Text.RegularExpressions.Regex.Match(Application.absoluteURL ?? "", "[?&]fps=(\\d{1,3})");
+        if (fpsUrl.Success)
+        {
+            fpsUrlLock = true;
+            optFps = Mathf.Clamp(int.Parse(fpsUrl.Groups[1].Value), 0, 120);
+        }
         optCalm = PlayerPrefs.GetInt("opt.calm", 0) == 1;
         AudioListener.volume = testMute || PlayerPrefs.GetInt("opt.mute", 0) == 1 ? 0 : 1;
         // телефоны и браузер по умолчанию на низкой графике
+        var scaleUrl = System.Text.RegularExpressions.Regex.Match(Application.absoluteURL ?? "", "[?&]scale=(\\d\\.\\d+)");
+        if (scaleUrl.Success) scaleForce = float.Parse(scaleUrl.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
         bool weak = Application.isMobilePlatform || Application.platform == RuntimePlatform.WebGLPlayer;
         optHigh = PlayerPrefs.GetInt("opt.high", weak ? 0 : 1) == 1;
         ApplyOpts();
@@ -288,6 +298,15 @@ public partial class Game
 
     float fpsLogT; int fpsLogF;
 
+    float lvlT; int lvlF;
+
+    // На WebGL Application.targetFrameRate игнорируется: Unity рисует по requestAnimationFrame, то есть на частоте
+    // экрана — на 120 Гц это 120 кадров, вдвое больше нужного нагрева. Режем кадры в шаблоне страницы
+    // (WebGLTemplates/Full/index.html), отсюда только сообщаем желаемую частоту.
+    [System.Runtime.InteropServices.DllImport("__Internal")] static extern void SetFrameCap(int fps);
+
+    static bool fpsUrlLock;
+
     void FrameRateTick()
     {
         if (LabOn || bot) return;
@@ -298,17 +317,23 @@ public partial class Game
             fpsLogT = Time.unscaledTime; fpsLogF = Time.frameCount;
         }
         // мир стоит (одиночный выбор карт, пауза, конец забега) — 30; в кооперативе мир идёт и под картами — полная
-        bool idle = state == State.Menu || (state == State.Town && menuTab != 0)
-            || (!WorldRuns && state != State.Play && state != State.Town);
+        // карты прокачки выезжают анимацией, на 30 кадрах она рвётся — им полная частота
+        bool cards = state == State.LevelUp || state == State.Super || state == State.Chest;
+        bool idle = !cards && (state == State.Menu || (state == State.Town && menuTab != 0)
+            || (!WorldRuns && state != State.Play && state != State.Town));
         // фон — 15, но только когда мир стоит: в бою шаг ограничен 1/20 с, и 15 кадров замедлили бы мир (у хозяина
         // кооператива — для всей комнаты) и сбили бы автоподстройку и потолок мобов (ревью Codex 16.11)
         int want = !idle ? optFps : Application.isFocused ? Mathf.Min(30, optFps) : 15;
+        UpdateRenderScale();
         if (want == fpsNow) return;
         fpsNow = want;
         // при vSync (уровень качества High для WebGL) Unity игнорирует targetFrameRate и рисует на частоте экрана —
         // на 120-герцовых экранах это 120 кадров: так и было до 16.11, ограничение «60» не работало никогда
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = want;
+#if UNITY_WEBGL && !UNITY_EDITOR
+        if (!fpsUrlLock) SetFrameCap(want);
+#endif
     }
 
     void ApplyOpts()
@@ -336,25 +361,38 @@ public partial class Game
         }
         rp.shadowDistance = optHigh ? 24 : 0;
         rp.msaaSampleCount = optHigh ? 2 : 1;
-        rp.supportsHDR = true;
+        rp.supportsHDR = false;
         bool phone = Application.isMobilePlatform;
         World.SetQuality(!optHigh, phone);
         // точечный свет заклинаний считается попиксельно на каждый предмет: на низкой — меньше источников разом
-        rp.maxAdditionalLightsCount = optHigh ? 8 : phone ? 2 : 4;
+        rp.maxAdditionalLightsCount = optHigh ? 4 : phone ? 2 : 3;
         // в браузере кости считает процессор: у угловатых моделей KayKit двух (на телефоне — одной) костей на вершину хватает
         QualitySettings.skinWeights = optHigh ? SkinWeights.FourBones : phone ? SkinWeights.OneBone : SkinWeights.TwoBones;
         rpHeight = 0;
         UpdateRenderScale();
     }
 
-    // На Retina и 4K рендер в родном разрешении съедает всё: держим короткую сторону кадра ~1200 (высокая),
-    // ~800 (низкая) или ~640 (низкая на телефоне) пикселей; adaptK — поправка автоподстройки (AdaptTick)
+    // На Retina и 4K рендер в родном разрешении съедает всё: держим короткую сторону кадра ~800 (высокая)
+    // или ~560 пикселей; adaptK — поправка автоподстройки (AdaptTick). Поверх полноэкранной карточки мир
+    // виден на 10% сквозь затемнение — там ужимаем кадр до 60% (множитель 0.6), интерфейс рисуется мимо
+    // этого буфера и остаётся резким.
+    bool rpPanel;
+
+    static float scaleForce;
+
+    public static void ForceScale(float v) { scaleForce = v; }
+
     void UpdateRenderScale()
     {
-        if (rp == null || Screen.width * 10000 + Screen.height == rpHeight) return;
+        bool panel = state == State.LevelUp || state == State.Super || state == State.Chest
+            || state == State.Pause || state == State.Stats || state == State.Menu;
+        if (rp == null || (Screen.width * 10000 + Screen.height == rpHeight && panel == rpPanel)) return;
         rpHeight = Screen.width * 10000 + Screen.height;
-        int target = optHigh ? 1200 : Application.isMobilePlatform ? 640 : 800;
-        rp.renderScale = Mathf.Clamp(target * adaptK / Mathf.Max(1, Mathf.Min(Screen.width, Screen.height)), 0.35f, 1f);
+        rpPanel = panel;
+        int target = optHigh ? 800 : Application.isMobilePlatform ? 560 : 560;
+        float scale = Mathf.Clamp(target * adaptK / Mathf.Max(1, Mathf.Min(Screen.width, Screen.height)), 0.35f, 1f);
+        if (scaleForce > 0) scale = Mathf.Clamp(scaleForce, 0.35f, 1f);
+        rp.renderScale = panel ? Mathf.Max(0.35f, scale * 0.6f) : scale;
     }
 
     // Автоподстройка разрешения: если в бою кадров заметно меньше цели, кадр мельчает шагами до 60%.

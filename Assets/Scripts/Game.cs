@@ -175,12 +175,33 @@ public partial class Game : MonoBehaviour
     }
 
     // заклинания, пассивки и слияния одного мага; у друга в кооперативе — свой такой же набор
+    // Стенд: ?orbs=N выдаёт шаровые молнии нужного уровня сразу на старте, иначе бот их видит
+    // только если карта случайно выпала. Работает лишь на локальном адресе.
+    void GiveOnStand(Orbs orbs, Fireball fireball)
+    {
+        if (!(Application.absoluteURL ?? "").Contains("127.0.0.1")) return;
+        var of = System.Text.RegularExpressions.Regex.Match(Application.absoluteURL, "[?&]orbs=(\\d)");
+        if (of.Success)
+        {
+            orbs.level = Mathf.Clamp(int.Parse(of.Groups[1].Value), 1, 8);
+            orbs.OnLevel(this);
+            orbs.Show(true);
+        }
+        var fire = System.Text.RegularExpressions.Regex.Match(Application.absoluteURL, "[?&]fire=(\\d)");
+        if (fire.Success)
+        {
+            fireball.level = Mathf.Clamp(int.Parse(fire.Groups[1].Value), 1, 8);
+            fireball.OnLevel(this);
+        }
+    }
+
     List<Skill> NewSkills()
     {
         var skills = new List<Skill>();
         var fb = new Fireball(); var li = new Lightning(); var orbs = new Orbs(); var aura = new FireAura(); var met = new Meteor();
         var lance = new IceLance(); var bliz = new Blizzard(); var quake = new Quake();
         skills.AddRange(new Skill[] { fb, li, orbs, aura, met, lance, bliz, quake });
+        GiveOnStand(orbs, fb);
         var gold = new Color(1f, 0.85f, 0.3f);
         // пассивки: 5 уровней, на последнем — развилка из трёх путей
         skills.Add(new Passive("Сила", "+15% урона всем заклинаниям", "might", p => p.dmgMul += 0.15f, gold).Paths(
@@ -281,6 +302,12 @@ public partial class Game : MonoBehaviour
         UiHookTick();   // ?ui=<экран> — проверка вёрстки (GameUiHook.cs)
         // шаг не больше 1/20 с: на слабом ноуте (20–30 FPS) мир не должен идти медленнее мага и часов
         float dt = LabOn ? 1 / 30f : Mathf.Min(Time.deltaTime, bot ? 1 / 12f : 1 / 20f);
+        // стенд: экран выбора магии открывается редко, поэтому его частоту кадров считаем отдельно
+        if (state == State.LevelUp && (Application.absoluteURL ?? "").Contains("127.0.0.1"))
+        {
+            lvlT += Time.unscaledDeltaTime; lvlF++;
+            if (lvlT > 1f) { Debug.Log($"levelup {lvlF / lvlT:0} fps"); lvlT = 0; lvlF = 0; }
+        }
         // хитстоп: на долю секунды мир почти замирает — удар ощущается тяжелее
         if (hitstop > 0) { hitstop -= Time.unscaledDeltaTime; dt *= 0.08f; }
         if (bot || auto) BotTick();
@@ -775,7 +802,7 @@ public partial class Game : MonoBehaviour
             e = new Enemy();
             e.go = World.Character(t.model, 1f, out e.anim, out _);
             World.Attach(e.go, t.weapon, World.Skeleton);
-            e.rends = World.Combine(e.go, t.model + "|" + t.weapon, World.Skeleton);
+            e.rends = World.Combine(e.go, t.model + "|" + t.weapon, World.Skeleton, true);
             // после склейки исходные рендеры выключены, и аниматор с отсечением считает скелет невидимым — кости замирают
             e.anim.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             e.anim.keepAnimatorStateOnDisable = true;
@@ -823,6 +850,7 @@ public partial class Game : MonoBehaviour
         {
             e.anim.enabled = true;
             e.anim.Play("Spawn", 0, 0);
+            VatState(e.rends, "Idle");
             e.spawnLock = 1.1f;
             Vfx.Burst(Vfx.Smoke, World.W(pos, 0.2f), 4, 1.2f, 1.2f, 0.9f, new Color(0.25f, 0.2f, 0.15f, 0.7f), 0.8f, 0.4f);
             Vfx.Burst(Vfx.Bone, World.W(pos, 0.1f), 5, 3, 0.08f, 0.6f, new Color(0.35f, 0.28f, 0.2f), 1f);
@@ -831,6 +859,7 @@ public partial class Game : MonoBehaviour
         {
             e.anim.enabled = true;
             e.anim.Play(t.speed > 2.5f ? "Run" : "Walk", 0, Random.value);
+            VatState(e.rends, t.speed > 2.5f ? "Run" : "Walk");
             e.spawnLock = 0;
         }
         enemies.Add(e);
@@ -843,6 +872,8 @@ public partial class Game : MonoBehaviour
         if (e.charged) tint = Color.Lerp(tint, new Color(0.6f, 0.8f, 1.5f), 0.5f);
         if (e.frozen > 0) tint = new Color(0.4f, 0.62f, 1.05f);
         else if (e.slow > 0) tint = Color.Lerp(tint, new Color(0.6f, 0.85f, 1.3f), 0.5f);
+        var va = e.rends != null && e.rends.Length > 0 ? e.rends[0].GetComponent<VatActor>() : null;
+        if (va != null) { va.Tint(e.flash > 0.02f ? Color.Lerp(tint, Color.white, 0.55f) : World.VatTint(tint, e.tier >= 4 ? 0.15f : 0f)); return; }
         var m = e.flash > 0.02f ? World.FlashMat : World.SkelMat(tint, e.frozen > 0 ? 0.12f : e.tier >= 4 ? 0.15f : 0);
         if (m == e.mat) return;
         e.mat = m;
@@ -850,6 +881,31 @@ public partial class Game : MonoBehaviour
     }
 
     public void Tint(Renderer r, Color c) => r.sharedMaterial = World.GlowMat(c);
+
+    static void VatSpeed(Renderer[] rends, float speed)
+    {
+        var a = rends != null && rends.Length > 0 ? rends[0].GetComponent<VatActor>() : null;
+        if (a != null) a.Speed(speed);
+    }
+
+    static void VatState(Renderer[] rends, string state)
+    {
+        var a = rends != null && rends.Length > 0 ? rends[0].GetComponent<VatActor>() : null;
+        if (a != null) a.State(state);
+    }
+
+    // Чёрное солнце аддитивным быть не может: аддитив только складывает свет, чёрного в нём нет.
+    // Ему нужен обычный прозрачный материал с тёмным ядром.
+    static Material blackSun;
+    public void MakeBlackSun(Proj p)
+    {
+        if (blackSun == null)
+        {
+            blackSun = new Material(Resources.Load<Material>("Mats/Alpha")) { mainTexture = Art.Tex("circle_02") };
+            blackSun.SetColor("_Color", new Color(0.04f, 0.02f, 0.07f, 0.94f));
+        }
+        p.rend.sharedMaterial = blackSun;
+    }
 
     bool AnyBoss()
     {
@@ -965,7 +1021,7 @@ public partial class Game : MonoBehaviour
                 if (bit)
                 {
                     e.attackCd -= dt;
-                    if (e.attackCd <= 0) { e.attackCd = 1.3f; e.anim.CrossFade("Attack", 0.05f); }
+                    if (e.attackCd <= 0) { e.attackCd = 1.3f; e.atkAnim = 0.8f; e.anim.CrossFade("Attack", 0.05f); }
                 }
             }
 
@@ -974,7 +1030,11 @@ public partial class Game : MonoBehaviour
             {
                 float a = e.spawnLock > 0 ? 1 : e.animSpeed * (e.stun > 0 ? 0.15f : e.slow > 0 ? 0.55f : e.rage ? 1.25f : 1f);
                 if (e.anim.speed != a) e.anim.speed = a;
+                VatSpeed(e.rends, a);
             }
+            if (e.atkAnim > 0) e.atkAnim -= dt;
+            if (e.spawnLock > 0) VatState(e.rends, "Idle");
+            else VatState(e.rends, e.atkAnim > 0 ? "Attack" : e.type.speed > 2.5f ? "Run" : "Walk");
             float punch = 0;
             if (e.flash > 0)
             {
@@ -1582,23 +1642,27 @@ public partial class Game : MonoBehaviour
         if (p == null)
         {
             p = new Proj();
-            p.go = World.Primitive(PrimitiveType.Sphere, World.Glow, 0.38f);
+            p.mat = new Material(World.Additive) { mainTexture = Art.Tex("fire_01") };
+            p.go = World.Primitive(PrimitiveType.Sphere, p.mat, 0.38f);
             p.rend = p.go.GetComponent<Renderer>();
             p.mf = p.go.GetComponent<MeshFilter>();
             p.baseMesh = p.mf.sharedMesh;
             p.light = new GameObject("ProjLight").AddComponent<Light>();
             p.light.transform.SetParent(p.go.transform, false);
             p.light.range = 4; p.light.intensity = 3; p.light.shadows = LightShadows.None;
+            p.light.enabled = false;
             p.tr = p.go.transform;
         }
         p.go.SetActive(true);
         p.mf.sharedMesh = p.baseMesh;
         // в густом залпе снаряды тусклее: при высокой скорости чар свечение сливалось в сплошное пятно (фидбек 16.11)
-        float glow = 6 * (1 - 0.6f * Crowd);
-        Tint(p.rend, new Color(c.r * glow, c.g * glow, c.b * glow));
+        // HDR нет: ярче единицы буфер уже не покажет, а пересвет съедает цвет школы и текстуру — держим в пределах
+        float glow = 0.95f * (1 - 0.6f * Crowd);
+        // снаряд рисуется аддитивным спрайтом с текстурой школы: подмена материала давала ровный белый шар
+        p.mat.SetColor("_Color", new Color(c.r * glow, c.g * glow, c.b * glow));
+        p.mat.SetTexture("_MainTex", Art.Tex(curElement == Element.Ice ? "circle_05" : curElement == Element.Fire ? "fire_01" : curElement == Element.Meteor ? "magic_03" : "magic_01"));
+        p.rend.sharedMaterial = p.mat;
         p.light.color = c;
-        // свет от каждого снаряда — дорогой точечный источник, на низкой графике без него и в густом залпе тоже
-        p.light.enabled = optHigh && projs.Count < 20;
         p.pos = from; p.vel = vel; p.dmg = dmg; p.pierce = pierce; p.splash = splash;
         p.life = 1.1f; p.radius = 0.35f; p.alive = true;
         p.bounce = 0; p.burn = false; p.zap = false; p.zapCd = 0; p.ice = false; p.freeze = false; p.split = false; p.big = false;
@@ -1635,7 +1699,8 @@ public partial class Game : MonoBehaviour
                 if (p.mf.sharedMesh == p.baseMesh)
                 {
                     p.mf.sharedMesh = Vfx.Icicles[pi % Vfx.Icicles.Length];
-                    Tint(p.rend, new Color(1.4f, 2.4f, 3.6f));
+                    p.mat.SetColor("_Color", new Color(0.55f, 0.85f, 1f));
+                    p.rend.sharedMaterial = p.mat;
                 }
                 p.tr.rotation = Quaternion.LookRotation(fwd) * Quaternion.Euler(90, 0, 0);
                 p.tr.localScale = new Vector3(0.24f, 1.5f, 0.24f) * size;
@@ -1886,6 +1951,7 @@ public partial class Game : MonoBehaviour
         if (choices.Count == 0) { player.hp = player.maxHp; return; }
         state = State.LevelUp;
         menuT = Time.unscaledTime;
+        if ((Application.absoluteURL ?? "").Contains("127.0.0.1")) Debug.Log($"levelup open t={Time.unscaledTime:0.00}");
         LevelFx(new Color(0.6f, 0.9f, 1f));
     }
 
@@ -1965,6 +2031,7 @@ public partial class Game : MonoBehaviour
             e.anim.speed = 1;
             e.anim.enabled = true;
             e.anim.CrossFade("Death", 0.05f);
+            VatState(e.rends, "Death");
             e.dying = 1.8f;
             if (!e.type.boss && Random.value < 0.6f)
             {

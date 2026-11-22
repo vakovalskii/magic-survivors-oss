@@ -116,6 +116,7 @@ public class BlackSun : Forbidden
             p.radius = Size(level) * g.player.area;
             p.life = 3.2f;
             p.big = true;
+            g.MakeBlackSun(p);
         }
         g.Cast(color);
     }

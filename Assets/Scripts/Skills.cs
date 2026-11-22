@@ -163,21 +163,36 @@ public class Orbs : Skill
     {
         while (orbs.Count < n)
         {
-            var go = World.Primitive(PrimitiveType.Sphere, World.Glow, 0.38f);
-            g.Tint(go.GetComponent<Renderer>(), new Color(1.5f, 4f, 6f));
-            var tr = go.AddComponent<TrailRenderer>();
+            var root = new GameObject("Orb");
+            var go = World.Primitive(PrimitiveType.Quad, OrbMat("magic_01", new Color(0.14f, 0.38f, 0.92f)), 2f);
+            go.name = "Shell";
+            go.transform.SetParent(root.transform, false);
+            var core = World.Primitive(PrimitiveType.Quad, OrbMat("circle_02", new Color(0.5f, 0.9f, 1f)), 0.7f);
+            core.name = "Core";
+            core.transform.SetParent(root.transform, false);
+            var tr = root.AddComponent<TrailRenderer>();
             tr.time = 0.25f;
-            tr.widthMultiplier = 0.3f;
+            tr.widthMultiplier = 0.16f;
             tr.widthCurve = AnimationCurve.Linear(0, 1, 1, 0);
             tr.sharedMaterial = World.Additive;
             tr.startColor = new Color(0.5f, 0.9f, 1f, 0.8f);
             tr.endColor = new Color(0.3f, 0.5f, 1f, 0);
             tr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            var l = new GameObject("OrbLight").AddComponent<Light>();
-            l.transform.SetParent(go.transform, false);
-            l.color = color; l.range = 3; l.intensity = 2; l.shadows = LightShadows.None;
-            orbs.Add(go.transform);
+            orbs.Add(root.transform);
         }
+    }
+
+    // Шар молнии — два слоя лицом к камере: мягкое ядро и вращающаяся электрическая оболочка вокруг него.
+    // Одна текстура читалась как значок, а не как плазма. Источники света на шары убраны.
+    static readonly Dictionary<string, Material> orbMats = new();
+
+    static Material OrbMat(string tex, Color color)
+    {
+        if (orbMats.TryGetValue(tex, out var m) && m != null) return m;
+        m = new Material(World.Additive) { mainTexture = Art.Tex(tex) };
+        m.SetColor("_Color", color);
+        orbMats[tex] = m;
+        return m;
     }
 
     public override void Tick(Game g, float dt)
@@ -198,6 +213,15 @@ public class Orbs : Skill
             float a = angle + i * Mathf.PI * 2 / orbs.Count;
             var p = g.player.pos + new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * r;
             orbs[i].position = W(p, 1f + 0.15f * Mathf.Sin(g.time * 4 + i));
+            var face = World.Billboard;
+            orbs[i].rotation = face;
+            var shell = orbs[i].GetChild(0);
+            var core = orbs[i].GetChild(1);
+            shell.rotation = face * Quaternion.Euler(0, 0, g.time * 150f + i * 37f);
+            shell.localScale = Vector3.one * 2f * (1f + 0.14f * Mathf.Sin(g.time * 7 + i * 2.1f));
+            core.rotation = face * Quaternion.Euler(0, 0, -g.time * 60f);
+            core.localScale = Vector3.one * (0.7f + 0.16f * Mathf.Sin(g.time * 11 + i));
+            if (Random.value < 0.06f) Vfx.Bolt(orbs[i].position, orbs[i].position + Random.onUnitSphere * 0.8f, new Color(0.45f, 0.8f, 1f), 0.05f);
             if (super == 1)
             {
                 g.Query(p, 2.6f, near);
